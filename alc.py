@@ -5,12 +5,14 @@
 # for a given word and automatically add them to a deck.
 #
 # Example sentences are pulled from www.alc.co.jp
+import urllib, re
 
 from PyQt4.QtGui import *
 from PyQt4.QtCore import *
-from aqt import mw, modelchooser, deckchooser
 from BeautifulSoup import BeautifulSoup
-import urllib, re
+
+from aqt import mw as Anki, modelchooser, deckchooser
+from anki.notes import Note
 
 class Sentence(QTreeWidgetItem):
     """A sentence that can be imported into Anki."""
@@ -56,8 +58,8 @@ class SentencePicker(QWidget):
         lSettings.addWidget(self._wModel)
         lSettings.addWidget(self._wDeck)
         
-        self._modelchooser = modelchooser.ModelChooser(mw, self._wModel)
-        self._deckchooser  = deckchooser.DeckChooser(mw, self._wDeck)
+        self._modelchooser = modelchooser.ModelChooser(Anki, self._wModel)
+        self._deckchooser  = deckchooser.DeckChooser(Anki, self._wDeck)
 
         # Input dialog
         lInput = QHBoxLayout()
@@ -87,16 +89,23 @@ class SentencePicker(QWidget):
 
     def _import(self):
         """Import the selected sentences into the active deck."""
-        # Show progress dialog
-        if self._sentences.topLevelItemCount() == 0 or len(self._sentences.selectedItems()) == 0:
+        selectCount = len(self._sentences.selectedItems())
+        if not self._sentences.topLevelItemCount() or not selectCount:
             self._show_error(u'You must select something...')
             return
-            
-        progress = QProgressDialog(u'例文をインポート中...', u'キャンセル', 0, self._sentences.topLevelItemCount())
+
+        progress = QProgressDialog(u'例文をインポート中...', u'キャンセル', 0, selectCount)
         progress.open()
+        pct = 0
+        success = 0
         # Import sentences
+        for s in self._sentences.selectedItems():
+            pct += 1
+            progress.setValue(pct)
+            if self._import_note(s.japanese, s.english):
+                success += 1
         
-        # Clear view
+        self.hide()
         self._sentences.clear()
         self._word.clear()
 
@@ -130,7 +139,13 @@ class SentencePicker(QWidget):
         percent = 50
         progress.setValue(percent)
         soup = BeautifulSoup(html)
-        sentences = soup.find('div', id='resultsList').find('ul')('li', recursive=False)
+        try:
+            sentences = soup.find('div', id='resultsList').find('ul')('li', recursive=False)
+        except:
+            self._show_error(u'例文を見つかれませんでした。')
+            progress.reset()
+            return
+
         for s in sentences:
             jp = re.sub(r'<.*?>', '', unicode(s.span))
             en = re.sub(u'(<.*?>|〔.*)', '', unicode(s.div), re.U)
@@ -147,6 +162,21 @@ class SentencePicker(QWidget):
         error.setInformativeText(msg)
         error.exec_()
         
+    def _import_note(self, front, back):
+        """Creates a fact from a selected sentence."""
+        note = Anki.col.newNote()
+        note.addTag('alc')
+        note.fields[0] = front
+        note.fields[1] = back
+        note.model()['did'] = self._deckchooser.selectedId()
+        if note.dupeOrEmpty():
+            return False 
+        
+        c = Anki.col.addNote(note)
+        if not c:
+            return False 
+        Anki.col.autosave()
+        
 # Start with alc being None because addons are loaded before the list
 # of decks is available.
 alc = None 
@@ -161,8 +191,8 @@ def show():
     else:
         alc.hide()
 
-a = QAction(mw)
+a = QAction(Anki)
 a.setText(u'スペースアルクで例文検索...')
 a.setShortcut("F11")
-mw.form.menuTools.addAction(a)
-mw.connect(a, SIGNAL("triggered()"), show)
+Anki.form.menuTools.addAction(a)
+Anki.connect(a, SIGNAL("triggered()"), show)
